@@ -20,17 +20,17 @@ const (
 // Zookeeper is the receiver type for
 // the Store interface
 type Zookeeper struct {
-	timeout time.Duration
-	client  *zk.Conn
-	// EventChan is a channel forwarding ZK connection events
-	EventChan <-chan zk.Event
+	timeout     time.Duration
+	client      *zk.Conn
+	zkEventChan <-chan zk.Event // channel forwarding ZK connection events
 }
 
 type zookeeperLock struct {
-	client *zk.Conn
-	lock   *zk.Lock
-	key    string
-	value  []byte
+	client      *zk.Conn
+	lock        *zk.Lock
+	key         string
+	value       []byte
+	zkEventChan <-chan zk.Event // channel forwarding ZK connection events
 }
 
 // Register registers zookeeper to libkv
@@ -52,12 +52,12 @@ func New(endpoints []string, options *store.Config) (store.Store, error) {
 	}
 
 	// Connect to Zookeeper
-	conn, evChan, err := zk.Connect(endpoints, s.timeout)
+	conn, eventChan, err := zk.Connect(endpoints, s.timeout)
 	if err != nil {
 		return nil, err
 	}
 	s.client = conn
-	s.EventChan = evChan
+	s.zkEventChan = eventChan
 
 	return s, nil
 }
@@ -390,10 +390,11 @@ func (s *Zookeeper) NewLock(key string, options *store.LockOptions) (lock store.
 	}
 
 	lock = &zookeeperLock{
-		client: s.client,
-		key:    s.normalize(key),
-		value:  value,
-		lock:   zk.NewLock(s.client, s.normalize(key), zk.WorldACL(zk.PermAll)),
+		client:      s.client,
+		key:         s.normalize(key),
+		value:       value,
+		lock:        zk.NewLock(s.client, s.normalize(key), zk.WorldACL(zk.PermAll)),
+		zkEventChan: s.zkEventChan,
 	}
 
 	return lock, err
@@ -412,7 +413,25 @@ func (l *zookeeperLock) Lock(stopChan chan struct{}) (<-chan struct{}, error) {
 		_, err = l.client.Set(l.key, l.value, -1)
 	}
 
-	return make(chan struct{}), err
+	lockLostCh := make(chan struct{})
+
+	// Detect if lock is lost, and close the channel
+	go func() {
+		for {
+			select {
+			case e := <-l.zkEventChan:
+				// An ephemeral znode can disappear after a connection loss with ZK longer
+				// than the znode timeout. After reconnection, the session will be expired,
+				// the lock neeeds to be considered lost.
+				if e.Type == zk.EventSession && e.State == zk.StateExpired {
+					close(lockLostCh)
+					return
+				}
+			}
+		}
+	}()
+
+	return lockLostCh, err
 }
 
 // Unlock the "key". Calling unlock while
@@ -431,3 +450,4 @@ func (s *Zookeeper) normalize(key string) string {
 	key = store.Normalize(key)
 	return strings.TrimSuffix(key, "/")
 }
+
