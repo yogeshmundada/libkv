@@ -67,6 +67,32 @@ func (s *Zookeeper) setTimeout(time time.Duration) {
 	s.timeout = time
 }
 
+// GetW get and watch the key
+func (s *Zookeeper) GetW(key string) (*store.KVPair, <-chan zk.Event, error) {
+	resp, meta, eventCh, err := s.client.GetW(s.normalize(key))
+
+	if err != nil {
+		if err == zk.ErrNoNode {
+			return nil, nil, store.ErrKeyNotFound
+		}
+		return nil, nil, err
+	}
+
+	// FIXME handle very rare cases where Get returns the
+	// SOH control character instead of the actual value
+	if string(resp) == SOH {
+		return s.GetW(store.Normalize(key))
+	}
+
+	pair := &store.KVPair{
+		Key:       key,
+		Value:     resp,
+		LastIndex: uint64(meta.Version),
+	}
+
+	return pair, eventCh, nil
+}
+
 // Get the value at "key", returns the last modified index
 // to use in conjunction to Atomic calls
 func (s *Zookeeper) Get(key string) (pair *store.KVPair, err error) {
@@ -160,7 +186,7 @@ func (s *Zookeeper) Exists(key string) (bool, error) {
 // be used to stop watching.
 func (s *Zookeeper) Watch(key string, stopCh <-chan struct{}) (<-chan *store.KVPair, error) {
 	// Get the key first
-	pair, err := s.Get(key)
+	pair, eventCh, err := s.GetW(key)
 	if err != nil {
 		return nil, err
 	}
@@ -174,16 +200,19 @@ func (s *Zookeeper) Watch(key string, stopCh <-chan struct{}) (<-chan *store.KVP
 		// to listening to any event that may occur on that key
 		watchCh <- pair
 		for {
-			_, _, eventCh, err := s.client.GetW(s.normalize(key))
-			if err != nil {
-				return
-			}
+
 			select {
 			case e := <-eventCh:
-				if e.Type == zk.EventNodeDataChanged {
-					if entry, err := s.Get(key); err == nil {
-						watchCh <- entry
-					}
+				// Rewatch the event after each event,
+				// update pair as the value may be updated during each call of GetW
+				pair, eventCh, err = s.GetW(key)
+				if err != nil {
+					return
+				}
+				// would receive zk.EventNotWatching when session expires,
+				// send user the updated value during session expiration
+				if e.Type == zk.EventNodeDataChanged || e.Type == zk.EventNotWatching {
+					watchCh <- pair
 				}
 			case <-stopCh:
 				// There is no way to stop GetW so just quit
@@ -450,4 +479,3 @@ func (s *Zookeeper) normalize(key string) string {
 	key = store.Normalize(key)
 	return strings.TrimSuffix(key, "/")
 }
-
