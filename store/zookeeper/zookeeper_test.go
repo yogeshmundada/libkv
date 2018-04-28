@@ -26,6 +26,8 @@ func makeZkClient(t *testing.T) store.Store {
 		t.Fatalf("cannot create store: %v", err)
 	}
 
+	assert.NotNil(t, kv.(*Zookeeper).EventChan)
+
 	return kv
 }
 

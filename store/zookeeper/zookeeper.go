@@ -6,7 +6,8 @@ import (
 
 	"github.com/docker/libkv"
 	"github.com/docker/libkv/store"
-	zk "github.com/samuel/go-zookeeper/zk"
+
+	"github.com/samuel/go-zookeeper/zk"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 type Zookeeper struct {
 	timeout time.Duration
 	client  *zk.Conn
+	// EventChan is a channel forwarding ZK connection events
+	EventChan <-chan zk.Event
 }
 
 type zookeeperLock struct {
@@ -49,11 +52,12 @@ func New(endpoints []string, options *store.Config) (store.Store, error) {
 	}
 
 	// Connect to Zookeeper
-	conn, _, err := zk.Connect(endpoints, s.timeout)
+	conn, evChan, err := zk.Connect(endpoints, s.timeout)
 	if err != nil {
 		return nil, err
 	}
 	s.client = conn
+	s.EventChan = evChan
 
 	return s, nil
 }
