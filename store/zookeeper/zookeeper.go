@@ -422,7 +422,7 @@ func (s *Zookeeper) NewLock(key string, options *store.LockOptions) (lock store.
 		client:      s.client,
 		key:         s.normalize(key),
 		value:       value,
-		lock:        zk.NewLock(s.client, s.normalize(key), zk.WorldACL(zk.PermAll)),
+		lock:        zk.NewLock(s.client, s.normalize(key), value, zk.WorldACL(zk.PermAll)),
 		zkEventChan: s.zkEventChan,
 	}
 
